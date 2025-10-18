@@ -1,0 +1,80 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ReelUser {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  password  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  projects  ReelProject[]
+  brandKit  ReelBrandKit?
+  
+  @@map("reel_users")
+}
+
+model ReelBrandKit {
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  logoUrl        String?
+  primaryColor   String   @default("#000000")
+  secondaryColor String   @default("#ffffff")
+  fontFamily     String   @default("Inter")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  user ReelUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("reel_brand_kits")
+}
+
+model ReelProject {
+  id          String        @id @default(uuid())
+  userId      String
+  name        String
+  status      ProjectStatus @default(PENDING)
+  templateId  String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  
+  user        ReelUser      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assets      ReelAsset[]
+  
+  @@map("reel_projects")
+}
+
+enum ProjectStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model ReelAsset {
+  id         String    @id @default(uuid())
+  projectId  String
+  type       AssetType
+  url        String
+  duration   Float?
+  metadata   Json?
+  createdAt  DateTime  @default(now())
+  
+  project    ReelProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  @@map("reel_assets")
+}
+
+enum AssetType {
+  RAW_VIDEO
+  FINAL_VIDEO
+  THUMBNAIL
+  AUDIO
+}
