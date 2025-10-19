@@ -4,10 +4,15 @@ import { prisma } from '@/lib/prisma';
 import { getPublicUrl } from '@/lib/r2';
 import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Video, Calendar, Clock, Download } from 'lucide-react';
+import { ArrowLeft, Video, Calendar, Clock, Download, Edit } from 'lucide-react';
 import DeleteProjectButton from '@/components/DeleteProjectButton';
 
-export default async function ProjectPage({ params }: { params: { id: string } }) {
+export default async function ProjectPage({ 
+  params 
+}: { 
+  params: Promise<{ id: string }> 
+}) {
+  const { id } = await params;
   const session = await getServerSession(authOptions);
 
   if (!session?.user?.email) {
@@ -16,7 +21,7 @@ export default async function ProjectPage({ params }: { params: { id: string } }
 
   const project = await prisma.reelProject.findFirst({
     where: {
-      id: params.id,
+      id: id,
       user: {
         email: session.user.email
       }
@@ -30,6 +35,8 @@ export default async function ProjectPage({ params }: { params: { id: string } }
   if (!project) {
     notFound();
   }
+
+  const hasVideos = project.assets.some(a => a.type === 'RAW_VIDEO');
 
   return (
     <div className="max-w-6xl mx-auto space-y-8">
@@ -62,6 +69,15 @@ export default async function ProjectPage({ params }: { params: { id: string } }
           }`}>
             {project.status}
           </span>
+          {hasVideos && (
+            <Link
+              href={`/dashboard/projects/${project.id}/edit`}
+              className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <Edit className="w-4 h-4 mr-2" />
+              Edit Video
+            </Link>
+          )}
           <DeleteProjectButton projectId={project.id} projectName={project.name} />
         </div>
       </div>
@@ -117,16 +133,6 @@ export default async function ProjectPage({ params }: { params: { id: string } }
             );
           })}
         </div>
-      </div>
-
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-blue-900 mb-2">
-          🎬 Coming Soon: Video Editor
-        </h3>
-        <p className="text-blue-800 text-sm">
-          We're building the video editor where you'll be able to trim clips, add text overlays, 
-          apply templates, and create stunning reels. Stay tuned!
-        </p>
       </div>
     </div>
   );
