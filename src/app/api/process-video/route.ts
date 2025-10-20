@@ -44,8 +44,9 @@ export async function POST(request: NextRequest) {
   let jobProject: (ReelProject & { assets: ReelAsset[] }) | null = null;
   let errorToReport: string | undefined;
 
-  // Security check: only allow this worker to be called internally in production
-  if (process.env.NODE_ENV === 'production' && request.headers.get('X-Worker-Secret') !== process.env.WORKER_SECRET) {
+  const environmentSecret = process.env.WORKER_SECRET || 'dev-secret';
+  
+  if (request.headers.get('X-Worker-Secret') !== environmentSecret) {
      return NextResponse.json({ error: 'Unauthorized Worker Access' }, { status: 403 });
   }
 
