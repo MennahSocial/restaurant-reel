@@ -1,0 +1,754 @@
+diff --git a/src/app/api/export/route.ts b/src/app/api/export/route.ts
+new file mode 100644
+index 0000000..762ff1c
+--- /dev/null
++++ b/src/app/api/export/route.ts
+@@ -0,0 +1,85 @@
++import { NextRequest, NextResponse } from 'next/server';
++import { getServerSession } from 'next-auth';
++import { authOptions } from '@/lib/auth';
++import { prisma } from '@/lib/prisma';
++import { r2 } from '@/lib/r2';
++import { GetObjectCommand } from '@aws-sdk/client-s3';
++
++export async function GET(request: NextRequest) {
++  try {
++    // Check authentication
++    const session = await getServerSession(authOptions);
++    if (!session?.user?.email) {
++      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
++    }
++
++    // Get asset ID from query params
++    const searchParams = request.nextUrl.searchParams;
++    const assetId = searchParams.get('assetId');
++
++    if (!assetId) {
++      return NextResponse.json({ error: 'Missing assetId parameter' }, { status: 400 });
++    }
++
++    // Verify user owns the asset
++    const asset = await prisma.reelAsset.findFirst({
++      where: {
++        id: assetId,
++        project: {
++          user: {
++            email: session.user.email
++          }
++        }
++      },
++      include: {
++        project: true
++      }
++    });
++
++    if (!asset) {
++      return NextResponse.json({ error: 'Asset not found or access denied' }, { status: 404 });
++    }
++
++    // Fetch video from R2
++    const command = new GetObjectCommand({
++      Bucket: process.env.R2_BUCKET_NAME,
++      Key: asset.url,
++    });
++
++    const response = await r2.send(command);
++
++    if (!response.Body) {
++      return NextResponse.json({ error: 'Video not found' }, { status: 404 });
++    }
++
++    // Convert stream to buffer
++    const chunks: Uint8Array[] = [];
++    for await (const chunk of response.Body as any) {
++      chunks.push(chunk);
++    }
++    const buffer = Buffer.concat(chunks);
++
++    // Generate download filename
++    const filename = asset.url.split('/').pop() || 'video.mp4';
++    const contentType = response.ContentType || 'video/mp4';
++
++    // Return video as download
++    return new NextResponse(buffer, {
++      status: 200,
++      headers: {
++        'Content-Type': contentType,
++        'Content-Length': buffer.length.toString(),
++        'Content-Disposition': `attachment; filename="${filename}"`,
++        'Cache-Control': 'private, max-age=0',
++      },
++    });
++
++  } catch (error: any) {
++    console.error('Export API error:', error);
++    return NextResponse.json(
++      { error: error.message || 'Failed to export video' },
++      { status: 500 }
++    );
++  }
++}
++
+diff --git a/src/app/api/trim/route.ts b/src/app/api/trim/route.ts
+new file mode 100644
+index 0000000..55751d8
+--- /dev/null
++++ b/src/app/api/trim/route.ts
+@@ -0,0 +1,175 @@
++import { NextRequest, NextResponse } from 'next/server';
++import { getServerSession } from 'next-auth';
++import { authOptions } from '@/lib/auth';
++import { prisma } from '@/lib/prisma';
++import { r2 } from '@/lib/r2';
++import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
++import { 
++  trimVideo, 
++  checkFFmpegInstalled, 
++  createTempDir, 
++  cleanupTempFiles,
++  generateTrimmedFilename 
++} from '@/lib/ffmpeg';
++import path from 'path';
++import fs from 'fs/promises';
++
++export const maxDuration = 60; // Maximum execution time in seconds
++
++export async function POST(request: NextRequest) {
++  let tempDir: string | null = null;
++
++  try {
++    // Check authentication
++    const session = await getServerSession(authOptions);
++    if (!session?.user?.email) {
++      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
++    }
++
++    // Parse request body
++    const body = await request.json();
++    const { projectId, assetId, trimStart, trimEnd } = body;
++
++    // Validate inputs
++    if (!projectId || !assetId || trimStart === undefined || trimEnd === undefined) {
++      return NextResponse.json(
++        { error: 'Missing required fields' },
++        { status: 400 }
++      );
++    }
++
++    if (trimStart < 0 || trimEnd <= trimStart) {
++      return NextResponse.json(
++        { error: 'Invalid trim times' },
++        { status: 400 }
++      );
++    }
++
++    // Check FFmpeg installation
++    const ffmpegInstalled = await checkFFmpegInstalled();
++    if (!ffmpegInstalled) {
++      return NextResponse.json(
++        { error: 'FFmpeg is not installed on the server' },
++        { status: 500 }
++      );
++    }
++
++    // Verify user owns the project
++    const project = await prisma.reelProject.findFirst({
++      where: {
++        id: projectId,
++        user: {
++          email: session.user.email
++        }
++      },
++      include: {
++        assets: {
++          where: {
++            id: assetId
++          }
++        }
++      }
++    });
++
++    if (!project || project.assets.length === 0) {
++      return NextResponse.json(
++        { error: 'Project or asset not found' },
++        { status: 404 }
++      );
++    }
++
++    const sourceAsset = project.assets[0];
++
++    // Create temporary directory
++    tempDir = await createTempDir();
++    const inputPath = path.join(tempDir, 'input' + path.extname(sourceAsset.url));
++    const outputPath = path.join(tempDir, 'output' + path.extname(sourceAsset.url));
++
++    // Download source video from R2
++    console.log('Downloading source video from R2...');
++    const getCommand = new GetObjectCommand({
++      Bucket: process.env.R2_BUCKET_NAME,
++      Key: sourceAsset.url,
++    });
++
++    const r2Response = await r2.send(getCommand);
++    if (!r2Response.Body) {
++      throw new Error('Failed to download video from R2');
++    }
++
++    // Write video to temp file
++    const chunks: Uint8Array[] = [];
++    for await (const chunk of r2Response.Body as any) {
++      chunks.push(chunk);
++    }
++    const buffer = Buffer.concat(chunks);
++    await fs.writeFile(inputPath, buffer);
++
++    // Trim video with FFmpeg
++    console.log(`Trimming video from ${trimStart}s to ${trimEnd}s...`);
++    await trimVideo({
++      inputPath,
++      outputPath,
++      startTime: trimStart,
++      endTime: trimEnd,
++      fastMode: true, // Use -c copy for faster processing
++    });
++
++    // Read trimmed video
++    const trimmedBuffer = await fs.readFile(outputPath);
++
++    // Generate new filename
++    const originalFilename = path.basename(sourceAsset.url);
++    const trimmedFilename = generateTrimmedFilename(originalFilename);
++    const trimmedKey = `trimmed/${session.user.email}/${trimmedFilename}`;
++
++    // Upload trimmed video to R2
++    console.log('Uploading trimmed video to R2...');
++    const putCommand = new PutObjectCommand({
++      Bucket: process.env.R2_BUCKET_NAME,
++      Key: trimmedKey,
++      Body: trimmedBuffer,
++      ContentType: r2Response.ContentType || 'video/mp4',
++    });
++
++    await r2.send(putCommand);
++
++    // Create new asset record
++    const newAsset = await prisma.reelAsset.create({
++      data: {
++        url: trimmedKey,
++        type: 'TRIMMED_VIDEO',
++        projectId: projectId,
++      },
++    });
++
++    // Clean up temporary files
++    await cleanupTempFiles(tempDir);
++    tempDir = null;
++
++    // Return success response
++    return NextResponse.json({
++      success: true,
++      asset: {
++        id: newAsset.id,
++        url: trimmedKey,
++        type: newAsset.type,
++        duration: trimEnd - trimStart,
++      },
++    });
++
++  } catch (error: any) {
++    console.error('Trim API error:', error);
++
++    // Clean up temp files if they exist
++    if (tempDir) {
++      await cleanupTempFiles(tempDir);
++    }
++
++    return NextResponse.json(
++      { error: error.message || 'Failed to trim video' },
++      { status: 500 }
++    );
++  }
++}
++
+diff --git a/src/app/dashboard/projects/[id]/edit/page.tsx b/src/app/dashboard/projects/[id]/edit/page.tsx
+index dbd6793..c8e1b35 100644
+--- a/src/app/dashboard/projects/[id]/edit/page.tsx
++++ b/src/app/dashboard/projects/[id]/edit/page.tsx
+@@ -89,8 +89,11 @@ export default async function EditPage({ params }: { params: { id: string } }) {
+       </div>
+ 
+       <VideoEditor
++        project={{
++          id: project.id,
++          name: project.name
++        }}
+         videoUrl={videoProxyUrl}
+-        projectId={project.id}
+         assetId={videoAsset.id}
+       />
+     </div>
+diff --git a/src/components/VideoEditorWithTrim.tsx b/src/components/VideoEditorWithTrim.tsx
+new file mode 100644
+index 0000000..7a599af
+--- /dev/null
++++ b/src/components/VideoEditorWithTrim.tsx
+@@ -0,0 +1,343 @@
++'use client';
++
++import { useState, useRef, useEffect } from 'react';
++import Link from 'next/link';
++import { ArrowLeft, Play, Pause, RotateCcw, Scissors, Type, Download, Loader2, CheckCircle, XCircle } from 'lucide-react';
++
++interface VideoEditorProps {
++  project: {
++    id: string;
++    name: string;
++  };
++  videoUrl: string;
++  assetId: string;
++}
++
++type TrimStatus = 'idle' | 'processing' | 'success' | 'error';
++
++export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorProps) {
++  const videoRef = useRef<HTMLVideoElement>(null);
++  const [isPlaying, setIsPlaying] = useState(false);
++  const [currentTime, setCurrentTime] = useState(0);
++  const [duration, setDuration] = useState(0);
++  const [trimStart, setTrimStart] = useState(0);
++  const [trimEnd, setTrimEnd] = useState(0);
++  
++  // Trim state
++  const [trimStatus, setTrimStatus] = useState<TrimStatus>('idle');
++  const [trimmedAssetId, setTrimmedAssetId] = useState<string | null>(null);
++  const [errorMessage, setErrorMessage] = useState<string>('');
++
++  useEffect(() => {
++    const video = videoRef.current;
++    if (!video) return;
++
++    const handleLoadedMetadata = () => {
++      setDuration(video.duration);
++      setTrimEnd(video.duration);
++    };
++
++    const handleTimeUpdate = () => {
++      setCurrentTime(video.currentTime);
++      
++      if (video.currentTime >= trimEnd) {
++        video.pause();
++        setIsPlaying(false);
++      }
++    };
++
++    // Check if metadata is already loaded (fixes race condition)
++    if (video.readyState >= 1) {
++      setDuration(video.duration);
++      setTrimEnd(video.duration);
++    }
++
++    video.addEventListener('loadedmetadata', handleLoadedMetadata);
++    video.addEventListener('timeupdate', handleTimeUpdate);
++
++    return () => {
++      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
++      video.removeEventListener('timeupdate', handleTimeUpdate);
++    };
++  }, [trimEnd]);
++
++  const togglePlayPause = () => {
++    const video = videoRef.current;
++    if (!video) return;
++
++    if (isPlaying) {
++      video.pause();
++    } else {
++      if (video.currentTime < trimStart || video.currentTime >= trimEnd) {
++        video.currentTime = trimStart;
++      }
++      video.play();
++    }
++    setIsPlaying(!isPlaying);
++  };
++
++  const handleReset = () => {
++    const video = videoRef.current;
++    if (!video) return;
++    
++    video.currentTime = trimStart;
++    setCurrentTime(trimStart);
++    video.pause();
++    setIsPlaying(false);
++  };
++
++  const formatTime = (seconds: number) => {
++    const mins = Math.floor(seconds / 60);
++    const secs = Math.floor(seconds % 60);
++    return `${mins}:${secs.toString().padStart(2, '0')}`;
++  };
++
++  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
++    const video = videoRef.current;
++    if (!video) return;
++    
++    const time = parseFloat(e.target.value);
++    video.currentTime = time;
++    setCurrentTime(time);
++  };
++
++  const handleTrim = async () => {
++    if (trimStatus === 'processing') return;
++
++    setTrimStatus('processing');
++    setErrorMessage('');
++
++    try {
++      const response = await fetch('/api/trim', {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json',
++        },
++        body: JSON.stringify({
++          projectId: project.id,
++          assetId: assetId,
++          trimStart: trimStart,
++          trimEnd: trimEnd,
++        }),
++      });
++
++      const data = await response.json();
++
++      if (!response.ok) {
++        throw new Error(data.error || 'Failed to trim video');
++      }
++
++      setTrimStatus('success');
++      setTrimmedAssetId(data.asset.id);
++
++      // Reset after 3 seconds
++      setTimeout(() => {
++        setTrimStatus('idle');
++      }, 3000);
++
++    } catch (error: any) {
++      console.error('Trim error:', error);
++      setTrimStatus('error');
++      setErrorMessage(error.message || 'Failed to trim video');
++    }
++  };
++
++  const handleExport = () => {
++    if (trimmedAssetId) {
++      // Download the trimmed video
++      window.open(`/api/export?assetId=${trimmedAssetId}`, '_blank');
++    } else {
++      // Download the original video
++      window.open(videoUrl, '_blank');
++    }
++  };
++
++  return (
++    <div className="flex flex-col h-screen bg-gray-900">
++      {/* Header - Fixed height */}
++      <div className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between flex-shrink-0">
++        <div className="flex items-center space-x-4">
++          <Link
++            href={`/dashboard/projects/${project.id}`}
++            className="p-2 hover:bg-gray-700 rounded-lg transition-colors text-white"
++          >
++            <ArrowLeft className="w-5 h-5" />
++          </Link>
++          <div>
++            <h1 className="text-xl font-bold text-white">{project.name}</h1>
++            <p className="text-sm text-gray-400">Video Editor</p>
++          </div>
++        </div>
++        <button 
++          onClick={handleExport}
++          className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
++          disabled={trimStatus === 'processing'}
++        >
++          <Download className="w-4 h-4" />
++          <span>Export</span>
++        </button>
++      </div>
++
++      {/* Main Content - Flexible */}
++      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
++        {/* Video Preview */}
++        <div className="flex-1 flex flex-col bg-black p-4 lg:p-8 min-h-0 overflow-y-auto">
++          <div className="w-full max-w-4xl mx-auto">
++            {/* Video Player */}
++            <div className="bg-black rounded-lg overflow-hidden">
++              <video
++                ref={videoRef}
++                src={videoUrl}
++                className="w-full max-h-[60vh] object-contain"
++                onClick={togglePlayPause}
++                playsInline
++                preload="metadata"
++              >
++                Your browser does not support the video tag.
++              </video>
++            </div>
++            
++            {/* Controls */}
++            <div className="mt-6 space-y-4">
++              {/* Timeline */}
++              <div className="space-y-2">
++                <input
++                  type="range"
++                  min={0}
++                  max={duration || 100}
++                  value={currentTime}
++                  onChange={handleSeek}
++                  className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
++                  style={{
++                    background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(currentTime / duration) * 100}%, #374151 ${(currentTime / duration) * 100}%, #374151 100%)`
++                  }}
++                />
++                <div className="flex justify-between text-sm text-gray-400">
++                  <span>{formatTime(currentTime)}</span>
++                  <span>{formatTime(duration)}</span>
++                </div>
++              </div>
++
++              {/* Playback Controls */}
++              <div className="flex items-center justify-center space-x-4 pb-4">
++                <button
++                  onClick={handleReset}
++                  className="p-3 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors text-white"
++                  title="Reset to start"
++                >
++                  <RotateCcw className="w-5 h-5" />
++                </button>
++                <button
++                  onClick={togglePlayPause}
++                  className="p-4 bg-blue-600 hover:bg-blue-700 rounded-full transition-colors text-white"
++                  title={isPlaying ? 'Pause' : 'Play'}
++                >
++                  {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-1" />}
++                </button>
++              </div>
++            </div>
++          </div>
++        </div>
++
++        {/* Sidebar Tools */}
++        <div className="w-full lg:w-80 bg-gray-800 border-l border-gray-700 p-6 overflow-y-auto flex-shrink-0">
++          <h2 className="text-lg font-semibold text-white mb-4">Tools</h2>
++          
++          <div className="space-y-4">
++            {/* Trim Tool */}
++            <div className="bg-gray-700 rounded-lg p-4">
++              <div className="flex items-center space-x-2 mb-3">
++                <Scissors className="w-5 h-5 text-blue-400" />
++                <h3 className="font-medium text-white">Trim Video</h3>
++              </div>
++              <div className="space-y-3">
++                <div>
++                  <label className="text-sm text-gray-400 block mb-1">Start Time (seconds)</label>
++                  <input
++                    type="number"
++                    min={0}
++                    max={duration}
++                    step={0.1}
++                    value={trimStart.toFixed(1)}
++                    onChange={(e) => setTrimStart(parseFloat(e.target.value))}
++                    className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-blue-500 focus:outline-none"
++                    disabled={trimStatus === 'processing'}
++                  />
++                </div>
++                <div>
++                  <label className="text-sm text-gray-400 block mb-1">End Time (seconds)</label>
++                  <input
++                    type="number"
++                    min={0}
++                    max={duration}
++                    step={0.1}
++                    value={trimEnd.toFixed(1)}
++                    onChange={(e) => setTrimEnd(parseFloat(e.target.value))}
++                    className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-blue-500 focus:outline-none"
++                    disabled={trimStatus === 'processing'}
++                  />
++                </div>
++                <div className="bg-gray-600 rounded p-2">
++                  <p className="text-xs text-gray-300">
++                    <span className="font-medium">Trimmed Duration:</span> {formatTime(trimEnd - trimStart)}
++                  </p>
++                </div>
++
++                {/* Trim Button */}
++                <button
++                  onClick={handleTrim}
++                  disabled={trimStatus === 'processing'}
++                  className="w-full flex items-center justify-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
++                >
++                  {trimStatus === 'processing' ? (
++                    <>
++                      <Loader2 className="w-4 h-4 animate-spin" />
++                      <span>Processing...</span>
++                    </>
++                  ) : trimStatus === 'success' ? (
++                    <>
++                      <CheckCircle className="w-4 h-4" />
++                      <span>Trimmed!</span>
++                    </>
++                  ) : (
++                    <>
++                      <Scissors className="w-4 h-4" />
++                      <span>Trim Video</span>
++                    </>
++                  )}
++                </button>
++
++                {/* Status Messages */}
++                {trimStatus === 'success' && (
++                  <div className="bg-green-900/50 border border-green-700 rounded p-3">
++                    <p className="text-sm text-green-300">
++                      ✓ Video trimmed successfully! Click Export to download.
++                    </p>
++                  </div>
++                )}
++
++                {trimStatus === 'error' && (
++                  <div className="bg-red-900/50 border border-red-700 rounded p-3">
++                    <p className="text-sm text-red-300">
++                      ✗ {errorMessage}
++                    </p>
++                  </div>
++                )}
++              </div>
++            </div>
++
++            {/* Text Overlay (Coming Soon) */}
++            <div className="bg-gray-700 rounded-lg p-4 opacity-50">
++              <div className="flex items-center space-x-2 mb-2">
++                <Type className="w-5 h-5 text-gray-400" />
++                <h3 className="font-medium text-white">Add Text</h3>
++              </div>
++              <p className="text-sm text-gray-400">Coming soon...</p>
++            </div>
++          </div>
++        </div>
++      </div>
++    </div>
++  );
++}
++
+diff --git a/src/lib/ffmpeg.ts b/src/lib/ffmpeg.ts
+new file mode 100644
+index 0000000..0e55c9d
+--- /dev/null
++++ b/src/lib/ffmpeg.ts
+@@ -0,0 +1,110 @@
++import { exec } from 'child_process';
++import { promisify } from 'util';
++import path from 'path';
++import fs from 'fs/promises';
++
++const execAsync = promisify(exec);
++
++export interface TrimOptions {
++  inputPath: string;
++  outputPath: string;
++  startTime: number;
++  endTime: number;
++  fastMode?: boolean; // Use -c copy for faster processing
++}
++
++export interface VideoInfo {
++  duration: number;
++  format: string;
++  codec: string;
++}
++
++/**
++ * Trim a video file using FFmpeg
++ */
++export async function trimVideo(options: TrimOptions): Promise<void> {
++  const { inputPath, outputPath, startTime, endTime, fastMode = true } = options;
++
++  // Validate times
++  if (startTime < 0 || endTime <= startTime) {
++    throw new Error('Invalid trim times');
++  }
++
++  // Build FFmpeg command
++  const codecOption = fastMode ? '-c copy' : '-c:v libx264 -c:a aac -preset fast';
++  
++  const command = `ffmpeg -i "${inputPath}" -ss ${startTime} -to ${endTime} ${codecOption} -y "${outputPath}"`;
++
++  try {
++    const { stdout, stderr } = await execAsync(command);
++    console.log('FFmpeg output:', stdout);
++    if (stderr) console.log('FFmpeg stderr:', stderr);
++  } catch (error: any) {
++    console.error('FFmpeg error:', error);
++    throw new Error(`Video trimming failed: ${error.message}`);
++  }
++}
++
++/**
++ * Get video information using FFprobe
++ */
++export async function getVideoInfo(filePath: string): Promise<VideoInfo> {
++  const command = `ffprobe -v error -show_entries format=duration,format_name -show_entries stream=codec_name -of json "${filePath}"`;
++
++  try {
++    const { stdout } = await execAsync(command);
++    const data = JSON.parse(stdout);
++    
++    return {
++      duration: parseFloat(data.format.duration),
++      format: data.format.format_name,
++      codec: data.streams[0]?.codec_name || 'unknown',
++    };
++  } catch (error: any) {
++    console.error('FFprobe error:', error);
++    throw new Error(`Failed to get video info: ${error.message}`);
++  }
++}
++
++/**
++ * Check if FFmpeg is installed
++ */
++export async function checkFFmpegInstalled(): Promise<boolean> {
++  try {
++    await execAsync('ffmpeg -version');
++    return true;
++  } catch (error) {
++    return false;
++  }
++}
++
++/**
++ * Create a temporary directory for video processing
++ */
++export async function createTempDir(): Promise<string> {
++  const tempDir = path.join(process.cwd(), 'tmp', `video-${Date.now()}`);
++  await fs.mkdir(tempDir, { recursive: true });
++  return tempDir;
++}
++
++/**
++ * Clean up temporary files
++ */
++export async function cleanupTempFiles(dirPath: string): Promise<void> {
++  try {
++    await fs.rm(dirPath, { recursive: true, force: true });
++  } catch (error) {
++    console.error('Failed to cleanup temp files:', error);
++  }
++}
++
++/**
++ * Generate output filename for trimmed video
++ */
++export function generateTrimmedFilename(originalFilename: string): string {
++  const timestamp = Date.now();
++  const ext = path.extname(originalFilename);
++  const basename = path.basename(originalFilename, ext);
++  return `trimmed-${timestamp}-${basename}${ext}`;
++}
++

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Play, Pause, RotateCcw, Scissors, Type, Download } from 'lucide-react';
+import { ArrowLeft, Play, Pause, RotateCcw, Scissors, Type, Download, Loader2, CheckCircle } from 'lucide-react';
 
 interface VideoEditorProps {
   project: {
@@ -10,15 +10,22 @@ interface VideoEditorProps {
     name: string;
   };
   videoUrl: string;
+  assetId: string;
 }
 
-export default function VideoEditor({ project, videoUrl }: VideoEditorProps) {
+type TrimStatus = 'idle' | 'processing' | 'success' | 'error';
+
+export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
+  
+  const [trimStatus, setTrimStatus] = useState<TrimStatus>('idle');
+  const [trimmedAssetId, setTrimmedAssetId] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string>('');
 
   useEffect(() => {
     const video = videoRef.current;
@@ -38,7 +45,6 @@ export default function VideoEditor({ project, videoUrl }: VideoEditorProps) {
       }
     };
 
-    // Check if metadata is already loaded (fixes race condition)
     if (video.readyState >= 1) {
       setDuration(video.duration);
       setTrimEnd(video.duration);
@@ -51,7 +57,7 @@ export default function VideoEditor({ project, videoUrl }: VideoEditorProps) {
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('timeupdate', handleTimeUpdate);
     };
-  }, [trimEnd]);
+  }, []);
 
   const togglePlayPause = () => {
     const video = videoRef.current;
@@ -93,9 +99,56 @@ export default function VideoEditor({ project, videoUrl }: VideoEditorProps) {
     setCurrentTime(time);
   };
 
+  const handleTrim = async () => {
+    if (trimStatus === 'processing') return;
+
+    setTrimStatus('processing');
+    setErrorMessage('');
+
+    try {
+      const response = await fetch('/api/trim', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          projectId: project.id,
+          assetId: assetId,
+          trimStart: trimStart,
+          trimEnd: trimEnd,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to trim video');
+      }
+
+      setTrimStatus('success');
+      setTrimmedAssetId(data.asset.id);
+
+      setTimeout(() => {
+        setTrimStatus('idle');
+      }, 3000);
+
+    } catch (error: any) {
+      console.error('Trim error:', error);
+      setTrimStatus('error');
+      setErrorMessage(error.message || 'Failed to trim video');
+    }
+  };
+
+  const handleExport = () => {
+    if (trimmedAssetId) {
+      window.open(`/api/export?assetId=${trimmedAssetId}`, '_blank');
+    } else {
+      window.open(videoUrl, '_blank');
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen bg-gray-900">
-      {/* Header - Fixed height */}
       <div className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between flex-shrink-0">
         <div className="flex items-center space-x-4">
           <Link
@@ -109,18 +162,19 @@ export default function VideoEditor({ project, videoUrl }: VideoEditorProps) {
             <p className="text-sm text-gray-400">Video Editor</p>
           </div>
         </div>
-        <button className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+        <button 
+          onClick={handleExport}
+          className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={trimStatus === 'processing'}
+        >
           <Download className="w-4 h-4" />
           <span>Export</span>
         </button>
       </div>
 
-      {/* Main Content - Flexible */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
-        {/* Video Preview */}
         <div className="flex-1 flex flex-col bg-black p-4 lg:p-8 min-h-0 overflow-y-auto">
           <div className="w-full max-w-4xl mx-auto">
-            {/* Video Player */}
             <div className="bg-black rounded-lg overflow-hidden">
               <video
                 ref={videoRef}
@@ -134,9 +188,7 @@ export default function VideoEditor({ project, videoUrl }: VideoEditorProps) {
               </video>
             </div>
             
-            {/* Controls */}
             <div className="mt-6 space-y-4">
-              {/* Timeline */}
               <div className="space-y-2">
                 <input
                   type="range"
@@ -155,7 +207,6 @@ export default function VideoEditor({ project, videoUrl }: VideoEditorProps) {
                 </div>
               </div>
 
-              {/* Playback Controls */}
               <div className="flex items-center justify-center space-x-4 pb-4">
                 <button
                   onClick={handleReset}
@@ -176,12 +227,10 @@ export default function VideoEditor({ project, videoUrl }: VideoEditorProps) {
           </div>
         </div>
 
-        {/* Sidebar Tools */}
         <div className="w-full lg:w-80 bg-gray-800 border-l border-gray-700 p-6 overflow-y-auto flex-shrink-0">
           <h2 className="text-lg font-semibold text-white mb-4">Tools</h2>
           
           <div className="space-y-4">
-            {/* Trim Tool */}
             <div className="bg-gray-700 rounded-lg p-4">
               <div className="flex items-center space-x-2 mb-3">
                 <Scissors className="w-5 h-5 text-blue-400" />
@@ -189,38 +238,92 @@ export default function VideoEditor({ project, videoUrl }: VideoEditorProps) {
               </div>
               <div className="space-y-3">
                 <div>
-                  <label className="text-sm text-gray-400 block mb-1">Start Time (seconds)</label>
+                  <label htmlFor="trim-start" className="text-sm text-gray-400 block mb-1">
+                    Start Time: {trimStart.toFixed(1)}s
+                  </label>
                   <input
-                    type="number"
+                    id="trim-start"
+                    type="range"
                     min={0}
                     max={duration}
                     step={0.1}
-                    value={trimStart.toFixed(1)}
+                    value={trimStart}
                     onChange={(e) => setTrimStart(parseFloat(e.target.value))}
-                    className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-blue-500 focus:outline-none"
+                    className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    disabled={trimStatus === 'processing'}
                   />
+                  <div className="flex justify-between text-xs text-gray-500 mt-1">
+                    <span>0.0s</span>
+                    <span>{duration.toFixed(1)}s</span>
+                  </div>
                 </div>
                 <div>
-                  <label className="text-sm text-gray-400 block mb-1">End Time (seconds)</label>
+                  <label htmlFor="trim-end" className="text-sm text-gray-400 block mb-1">
+                    End Time: {trimEnd.toFixed(1)}s
+                  </label>
                   <input
-                    type="number"
-                    min={0}
+                    id="trim-end"
+                    type="range"
+                    min={trimStart}
                     max={duration}
                     step={0.1}
-                    value={trimEnd.toFixed(1)}
+                    value={trimEnd}
                     onChange={(e) => setTrimEnd(parseFloat(e.target.value))}
-                    className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-blue-500 focus:outline-none"
+                    className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    disabled={trimStatus === 'processing'}
                   />
+                  <div className="flex justify-between text-xs text-gray-500 mt-1">
+                    <span>{trimStart.toFixed(1)}s</span>
+                    <span>{duration.toFixed(1)}s</span>
+                  </div>
                 </div>
                 <div className="bg-gray-600 rounded p-2">
                   <p className="text-xs text-gray-300">
-                    <span className="font-medium">Trimmed Duration:</span> {formatTime(trimEnd - trimStart)}
+                    <span className="font-medium">Trimmed Duration:</span> {formatTime(Math.max(0, trimEnd - trimStart))}
                   </p>
                 </div>
+
+                <button
+                  onClick={handleTrim}
+                  disabled={trimStatus === 'processing'}
+                  className="w-full flex items-center justify-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {trimStatus === 'processing' ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Processing...</span>
+                    </>
+                  ) : trimStatus === 'success' ? (
+                    <>
+                      <CheckCircle className="w-4 h-4" />
+                      <span>Trimmed!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Scissors className="w-4 h-4" />
+                      <span>Trim Video</span>
+                    </>
+                  )}
+                </button>
+
+                {trimStatus === 'success' && (
+                  <div className="bg-green-900/50 border border-green-700 rounded p-3">
+                    <p className="text-sm text-green-300">
+                      ✓ Video trimmed successfully! Click Export to download.
+                    </p>
+                  </div>
+                )}
+
+                {trimStatus === 'error' && (
+                  <div className="bg-red-900/50 border border-red-700 rounded p-3">
+                    <p className="text-sm text-red-300">
+                      ✗ {errorMessage}
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Text Overlay (Coming Soon) */}
             <div className="bg-gray-700 rounded-lg p-4 opacity-50">
               <div className="flex items-center space-x-2 mb-2">
                 <Type className="w-5 h-5 text-gray-400" />

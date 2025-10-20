@@ -38,3 +38,4 @@ prisma/dev.db-journal
 .railway
 
 /src/generated/prisma
+tmp/

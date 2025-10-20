@@ -47,6 +47,7 @@ export default async function EditProjectPage({
           name: project.name,
         }}
         videoUrl={videoUrl}
+        assetId={project.assets[0].id}
       />
     </div>
   );
