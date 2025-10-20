@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Play, Pause, RotateCcw, Scissors, Type, Download, Loader2, CheckCircle } from 'lucide-react';
+import { ArrowLeft, Play, Pause, RotateCcw, Scissors, Type, Download, Loader2, CheckCircle, Music } from 'lucide-react';
+import axios from 'axios';
 
 interface VideoEditorProps {
   project: {
@@ -15,75 +16,115 @@ interface VideoEditorProps {
 
 type TrimStatus = 'idle' | 'processing' | 'success' | 'error';
 
+interface BrandKit {
+  primaryColor: string;
+  secondaryColor: string;
+  fontFamily: string;
+}
+
+// MOCK DATA: Simulates fetching the user's brand kit
+const MOCK_BRAND_KIT: BrandKit = {
+  primaryColor: '#EF4444', // Red-500: great for highlighting food
+  secondaryColor: '#FBBF24', // Amber-400: warm color for food/restaurant
+  fontFamily: 'Roboto, sans-serif', 
+};
+
+// MOCK DATA: Simulated list of licensed music tracks
+const MOCK_AUDIO_TRACKS = [
+  { id: 'track-1', name: 'Jazz Lounge (30s)' },
+  { id: 'track-2', name: 'Upbeat Funk (60s)' },
+  { id: 'track-3', name: 'Calm Acoustic (45s)' },
+];
+
+
 export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const trimEndRef = useRef(0);
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
+
+  const [selectedAudio, setSelectedAudio] = useState<string | null>(null); 
+  
+  // NEW STATE: For Text Overlay Feature
+  const [textOverlay, setTextOverlay] = useState({
+    content: '',
+    position: 'bottom' as 'top' | 'center' | 'bottom',
+    isVisible: false,
+    color: MOCK_BRAND_KIT.primaryColor,
+    font: MOCK_BRAND_KIT.fontFamily
+  });
   
   const [trimStatus, setTrimStatus] = useState<TrimStatus>('idle');
   const [trimmedAssetId, setTrimmedAssetId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
+
+  // Synchronize ref with trimEnd state whenever it changes
+  useEffect(() => {
+    trimEndRef.current = trimEnd;
+  }, [trimEnd]);
+
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const handleLoadedMetadata = () => {
-      setDuration(video.duration);
-      setTrimEnd(video.duration);
-    };
-
-    const handleTimeUpdate = () => {
-      setCurrentTime(video.currentTime);
-      
-      if (video.currentTime >= trimEnd) {
-        video.pause();
-        setIsPlaying(false);
-      }
+      const videoDuration = video.duration || 0;
+      setDuration(videoDuration);
+      setTrimEnd(videoDuration);
     };
 
     const handlePlay = () => setIsPlaying(true);
     const handlePause = () => setIsPlaying(false);
 
+    const handleTimeUpdate = () => {
+      setCurrentTime(video.currentTime);
+      
+      // FIX: Use trimEndRef.current for the LATEST value for accurate pausing
+      if (video.currentTime >= trimEndRef.current) {
+        video.pause();
+      }
+    };
+
     if (video.readyState >= 1) {
-      setDuration(video.duration);
-      setTrimEnd(video.duration);
+      const videoDuration = video.duration || 0;
+      setDuration(videoDuration);
+      setTrimEnd(videoDuration);
     }
 
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('timeupdate', handleTimeUpdate);
-    video.addEventListener('play', handlePlay);
+    video.addEventListener('play', handlePlay); 
     video.addEventListener('pause', handlePause);
-
+    
     return () => {
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('play', handlePlay);
       video.removeEventListener('pause', handlePause);
     };
-  }, []);
+  }, []); 
 
-  const togglePlayPause = async () => {
+  const togglePlayPause = () => {
     const video = videoRef.current;
     if (!video) return;
-
-    if (isPlaying) {
-      video.pause();
-    } else {
+  
+    if (video.paused) {
       if (video.currentTime < trimStart || video.currentTime >= trimEnd) {
         video.currentTime = trimStart;
       }
-      try {
-        await video.play();
-      } catch (error) {
-        console.error('Play failed:', error);
-        setIsPlaying(false);
-      }
+      video.play().catch(err => {
+        console.error('Video play failed:', err);
+      });
+    } else {
+      video.pause();
     }
   };
+  
 
   const handleReset = () => {
     const video = videoRef.current;
@@ -92,7 +133,6 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
     video.currentTime = trimStart;
     setCurrentTime(trimStart);
     video.pause();
-    setIsPlaying(false);
   };
 
   const formatTime = (seconds: number) => {
@@ -117,27 +157,19 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
     setErrorMessage('');
 
     try {
-      const response = await fetch('/api/trim', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      if (trimEnd <= trimStart) {
+        throw new Error('End time must be greater than start time.');
+      }
+
+      const response = await axios.post('/api/trim', {
           projectId: project.id,
           assetId: assetId,
           trimStart: trimStart,
           trimEnd: trimEnd,
-        }),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to trim video');
-      }
-
       setTrimStatus('success');
-      setTrimmedAssetId(data.asset.id);
+      setTrimmedAssetId(response.data.asset.id);
 
       setTimeout(() => {
         setTrimStatus('idle');
@@ -146,15 +178,26 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
     } catch (error: any) {
       console.error('Trim error:', error);
       setTrimStatus('error');
-      setErrorMessage(error.message || 'Failed to trim video');
+      setErrorMessage(error.response?.data?.error || error.message || 'Failed to trim video');
     }
   };
 
   const handleExport = () => {
+    // NOTE: In a future iteration, the export API call would package 
+    // the video, audio, and textOverlay data into a single job for FFmpeg.
     if (trimmedAssetId) {
       window.open(`/api/export?assetId=${trimmedAssetId}`, '_blank');
     } else {
       window.open(videoUrl, '_blank');
+    }
+  };
+
+  // Helper function to get Tailwind class for text position
+  const getTextPositionClass = (position: string) => {
+    switch (position) {
+      case 'top': return 'top-8';
+      case 'center': return 'top-1/2 -translate-y-1/2';
+      case 'bottom': default: return 'bottom-8';
     }
   };
 
@@ -175,28 +218,44 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
         </div>
         <button 
           onClick={handleExport}
-          className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          // The Export button changes color based on the primary brand color
+          className={`flex items-center space-x-2 px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed`}
+          style={{ backgroundColor: MOCK_BRAND_KIT.primaryColor }}
           disabled={trimStatus === 'processing'}
         >
           <Download className="w-4 h-4" />
-          <span>Export</span>
+          <span>Export Final Reel</span>
         </button>
       </div>
 
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
         <div className="flex-1 flex flex-col bg-black p-4 lg:p-8 min-h-0 overflow-y-auto">
           <div className="w-full max-w-4xl mx-auto">
-            <div className="bg-black rounded-lg overflow-hidden">
+            <div className="bg-black rounded-lg overflow-hidden relative">
               <video
                 ref={videoRef}
                 src={videoUrl}
                 className="w-full max-h-[60vh] object-contain"
-                onClick={togglePlayPause}
                 playsInline
                 preload="metadata"
               >
                 Your browser does not support the video tag.
               </video>
+
+              {/* NEW: Text Overlay Preview */}
+              {textOverlay.isVisible && (
+                <div 
+                  className={`absolute left-0 right-0 p-4 text-center pointer-events-none ${getTextPositionClass(textOverlay.position)}`}
+                  style={{ fontFamily: textOverlay.font }}
+                >
+                  <p 
+                    className={`text-4xl font-black uppercase tracking-wide px-4 py-2 bg-black/50 inline-block`}
+                    style={{ color: textOverlay.color, WebkitTextStroke: `1px ${MOCK_BRAND_KIT.secondaryColor}` }} // Simulates an outline effect
+                  >
+                    {textOverlay.content}
+                  </p>
+                </div>
+              )}
             </div>
             
             <div className="mt-6 space-y-4">
@@ -209,7 +268,7 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
                   onChange={handleSeek}
                   className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
                   style={{
-                    background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(currentTime / duration) * 100}%, #374151 ${(currentTime / duration) * 100}%, #374151 100%)`
+                    background: `linear-gradient(to right, ${MOCK_BRAND_KIT.primaryColor} 0%, ${MOCK_BRAND_KIT.primaryColor} ${(currentTime / duration) * 100}%, #374151 ${(currentTime / duration) * 100}%, #374151 100%)`
                   }}
                 />
                 <div className="flex justify-between text-sm text-gray-400">
@@ -228,7 +287,9 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
                 </button>
                 <button
                   onClick={togglePlayPause}
-                  className="p-4 bg-blue-600 hover:bg-blue-700 rounded-full transition-colors text-white"
+                  className={`p-4 text-white rounded-full transition-colors`}
+                  style={{ backgroundColor: isPlaying ? '#374151' : MOCK_BRAND_KIT.primaryColor, 
+                           hover: { backgroundColor: isPlaying ? '#1f2937' : MOCK_BRAND_KIT.secondaryColor } }}
                   title={isPlaying ? 'Pause' : 'Play'}
                 >
                   {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-1" />}
@@ -242,12 +303,14 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
           <h2 className="text-lg font-semibold text-white mb-4">Tools</h2>
           
           <div className="space-y-4">
+            {/* Trim Tool */}
             <div className="bg-gray-700 rounded-lg p-4">
               <div className="flex items-center space-x-2 mb-3">
                 <Scissors className="w-5 h-5 text-blue-400" />
                 <h3 className="font-medium text-white">Trim Video</h3>
               </div>
               <div className="space-y-3">
+                {/* ... Trim controls remain here ... */}
                 <div>
                   <label htmlFor="trim-start" className="text-sm text-gray-400 block mb-1">
                     Start Time: {trimStart.toFixed(1)}s
@@ -335,12 +398,73 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
               </div>
             </div>
 
-            <div className="bg-gray-700 rounded-lg p-4 opacity-50">
-              <div className="flex items-center space-x-2 mb-2">
-                <Type className="w-5 h-5 text-gray-400" />
-                <h3 className="font-medium text-white">Add Text</h3>
+            {/* Audio Selection Tool */}
+            <div className="bg-gray-700 rounded-lg p-4">
+              <div className="flex items-center space-x-2 mb-3">
+                <Music className="w-5 h-5 text-green-400" />
+                <h3 className="font-medium text-white">Add Music Track</h3>
               </div>
-              <p className="text-sm text-gray-400">Coming soon...</p>
+              
+              <select
+                value={selectedAudio || 'none'}
+                onChange={(e) => setSelectedAudio(e.target.value === 'none' ? null : e.target.value)}
+                className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-green-500 focus:outline-none text-sm"
+              >
+                <option value="none">No Background Music</option>
+                {MOCK_AUDIO_TRACKS.map(track => (
+                  <option key={track.id} value={track.id}>{track.name}</option>
+                ))}
+              </select>
+
+              {selectedAudio && (
+                <p className="text-xs text-green-300 mt-2">
+                  Selected: {MOCK_AUDIO_TRACKS.find(t => t.id === selectedAudio)?.name}
+                </p>
+              )}
+            </div>
+
+
+            {/* NEW FEATURE: Branded Text Overlay */}
+            <div 
+              className="rounded-lg p-4 bg-gray-700 border"
+              style={{ borderColor: MOCK_BRAND_KIT.primaryColor, borderWidth: 1 }}
+            >
+              <div className="flex items-center space-x-2 mb-3">
+                <Type className="w-5 h-5" style={{ color: MOCK_BRAND_KIT.primaryColor }} />
+                <h3 className="font-medium text-white">Add Text Overlay</h3>
+              </div>
+              <div className="space-y-3">
+                {/* Text Input */}
+                <div>
+                  <label htmlFor="text-content" className="text-sm text-gray-400 block mb-1">Text Content</label>
+                  <input
+                    id="text-content"
+                    type="text"
+                    value={textOverlay.content}
+                    onChange={(e) => setTextOverlay(p => ({ ...p, content: e.target.value, isVisible: e.target.value.length > 0 }))}
+                    placeholder="E.g., Try Our New Special!"
+                    className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-red-500 focus:outline-none text-sm"
+                  />
+                  <p className="text-xs text-gray-400 mt-1" style={{ fontFamily: MOCK_BRAND_KIT.fontFamily }}>
+                    Font: **{MOCK_BRAND_KIT.fontFamily}** | Color: **{MOCK_BRAND_KIT.primaryColor}**
+                  </p>
+                </div>
+                
+                {/* Position Select */}
+                <div>
+                  <label htmlFor="text-position" className="text-sm text-gray-400 block mb-1">Position</label>
+                  <select
+                    id="text-position"
+                    value={textOverlay.position}
+                    onChange={(e) => setTextOverlay(p => ({ ...p, position: e.target.value as 'top' | 'center' | 'bottom' }))}
+                    className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-red-500 focus:outline-none text-sm"
+                  >
+                    <option value="top">Top</option>
+                    <option value="center">Center</option>
+                    <option value="bottom">Bottom</option>
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
         </div>
