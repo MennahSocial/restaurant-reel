@@ -45,6 +45,9 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
       }
     };
 
+    const handlePlay = () => setIsPlaying(true);
+    const handlePause = () => setIsPlaying(false);
+
     if (video.readyState >= 1) {
       setDuration(video.duration);
       setTrimEnd(video.duration);
@@ -52,14 +55,18 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
 
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('play', handlePlay);
+    video.addEventListener('pause', handlePause);
 
     return () => {
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('timeupdate', handleTimeUpdate);
+      video.removeEventListener('play', handlePlay);
+      video.removeEventListener('pause', handlePause);
     };
   }, []);
 
-  const togglePlayPause = () => {
+  const togglePlayPause = async () => {
     const video = videoRef.current;
     if (!video) return;
 
@@ -69,9 +76,13 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
       if (video.currentTime < trimStart || video.currentTime >= trimEnd) {
         video.currentTime = trimStart;
       }
-      video.play();
+      try {
+        await video.play();
+      } catch (error) {
+        console.error('Play failed:', error);
+        setIsPlaying(false);
+      }
     }
-    setIsPlaying(!isPlaying);
   };
 
   const handleReset = () => {

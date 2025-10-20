@@ -8,9 +8,8 @@ import VideoEditor from '@/components/VideoEditor';
 export default async function EditVideoPage({
   params,
 }: {
-  params: Promise<{ id: string }>; // CHANGED: Added Promise
+  params: Promise<{ id: string }>;
 }) {
-  // ADDED: Await params (Next.js 15 requirement)
   const { id } = await params;
 
   const session = await getServerSession(authOptions);
@@ -29,7 +28,7 @@ export default async function EditVideoPage({
 
   const project = await prisma.reelProject.findUnique({
     where: {
-      id: id, // CHANGED: Use awaited id
+      id: id,
       userId: user.id,
     },
   });
@@ -38,10 +37,11 @@ export default async function EditVideoPage({
     redirect('/dashboard');
   }
 
+  // Get the latest RAW_VIDEO asset for this project
   const assets = await prisma.reelAsset.findMany({
     where: {
       projectId: project.id,
-      type: AssetType.video,
+      type: AssetType.RAW_VIDEO,
     },
     orderBy: {
       createdAt: 'desc',
@@ -54,8 +54,14 @@ export default async function EditVideoPage({
   }
 
   const asset = assets[0];
+  const videoUrl = `https://pub-437a859a90fc40a187a8684078f14b90.r2.dev/${asset.url}`;
 
-  const videoUrl = `/api/video-proxy?key=${encodeURIComponent(asset.url)}`;
+  console.log('Asset found:', asset);
+  console.log('Video URL:', videoUrl);
+
+  if (!videoUrl) {
+    throw new Error('Video URL is missing');
+  }
 
   return (
     <VideoEditor
