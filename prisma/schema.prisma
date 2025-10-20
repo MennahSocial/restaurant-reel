@@ -41,6 +41,7 @@ model ReelProject {
   userId      String
   name        String
   status      ProjectStatus @default(PENDING)
+  jobDetails  Json?
   templateId  String?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt

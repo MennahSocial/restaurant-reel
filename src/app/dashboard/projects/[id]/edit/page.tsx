@@ -5,10 +5,17 @@ import { prisma } from '@/lib/prisma';
 import { AssetType } from '@prisma/client';
 import VideoEditor from '@/components/VideoEditor';
 
+// Define the expected Brand Kit structure
+interface BrandKitData {
+  primaryColor: string;
+  secondaryColor: string;
+  fontFamily: string;
+}
+
 export default async function EditVideoPage({
   params,
 }: {
-  params: Promise<{ id: string }>;
+  params: Promise<{ id: string }>; 
 }) {
   const { id } = await params;
 
@@ -18,6 +25,7 @@ export default async function EditVideoPage({
     redirect('/auth/signin');
   }
 
+  // Get user to fetch brand kit and project
   const user = await prisma.reelUser.findUnique({
     where: { email: session.user.email },
   });
@@ -25,6 +33,29 @@ export default async function EditVideoPage({
   if (!user) {
     redirect('/auth/signin');
   }
+
+  // Fetch the brand kit settings
+  const userBrandKit = await prisma.reelBrandKit.findUnique({
+    where: { userId: user.id },
+    select: {
+      primaryColor: true,
+      secondaryColor: true,
+      fontFamily: true,
+    }
+  });
+
+  // Define fallback/default values
+  const defaultKit: BrandKitData = {
+    primaryColor: '#000000',
+    secondaryColor: '#ffffff',
+    fontFamily: 'Inter',
+  };
+
+  // Combine fetched data with defaults
+  const brandKitProps: BrandKitData = {
+    ...defaultKit,
+    ...(userBrandKit || {}),
+  };
 
   const project = await prisma.reelProject.findUnique({
     where: {
@@ -37,11 +68,13 @@ export default async function EditVideoPage({
     redirect('/dashboard');
   }
 
-  // Get the latest RAW_VIDEO asset for this project
   const assets = await prisma.reelAsset.findMany({
     where: {
       projectId: project.id,
-      type: AssetType.RAW_VIDEO,
+      // Correctly look for editable video assets (Raw or Trimmed/Processed)
+      type: {
+        in: [AssetType.RAW_VIDEO, AssetType.TRIMMED_VIDEO],
+      },
     },
     orderBy: {
       createdAt: 'desc',
@@ -54,14 +87,8 @@ export default async function EditVideoPage({
   }
 
   const asset = assets[0];
-  const videoUrl = `https://pub-437a859a90fc40a187a8684078f14b90.r2.dev/${asset.url}`;
 
-  console.log('Asset found:', asset);
-  console.log('Video URL:', videoUrl);
-
-  if (!videoUrl) {
-    throw new Error('Video URL is missing');
-  }
+  const videoUrl = `/api/video-proxy?key=${encodeURIComponent(asset.url)}`;
 
   return (
     <VideoEditor
@@ -71,6 +98,7 @@ export default async function EditVideoPage({
       }}
       videoUrl={videoUrl}
       assetId={asset.id}
+      brandKit={brandKitProps} // <-- PASSES REAL DATA TO CLIENT
     />
   );
 }
