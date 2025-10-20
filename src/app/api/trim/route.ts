@@ -1,9 +1,10 @@
+// --- START COPY PASTE for src/app/api/trim/route.ts ---
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 
-// This is now only a JOB SUBMITTER, it no longer runs FFmpeg.
+// This is the JOB SUBMITTER endpoint.
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,9 +14,8 @@ export async function POST(request: NextRequest) {
     }
 
     const userId = (session.user as any).id;
-
-    // Parse request body with all processing parameters
     const body = await request.json();
+    
     const { 
         projectId, 
         assetId, 
@@ -39,7 +39,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify user owns the project/asset (simple check)
     const project = await prisma.reelProject.findFirst({
         where: { id: projectId, userId: userId },
         include: {
@@ -54,34 +53,49 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // --- Job Submission (New Logic) ---
+    const sourceAsset = project.assets[0];
 
-    // 1. Update Project Status to show it's working
-    await prisma.reelProject.update({
-        where: { id: projectId },
-        data: {
-            status: 'PROCESSING',
-        }
-    });
+    // --- Job Submission Logic ---
 
-    // 2. Persist all job details for the background worker to pick up
-    // NOTE: This JSON is what the worker would read to run FFmpeg.
+    // 1. Persist ALL job details (source, trim, layers) in the jobDetails column
     const jobDetails = {
-        sourceAssetKey: project.assets[0].url,
+        sourceAssetId: sourceAsset.id,
+        sourceAssetKey: sourceAsset.url,
         trimStart,
         trimEnd,
         selectedAudio,
         textOverlay,
     };
     
-    // 3. Instead of a dedicated job table, we'll store the job details 
-    // in the project's metadata (a new column would be cleaner later).
-    // For now, we'll just return success and rely on the PROCESSING status.
+    await prisma.reelProject.update({
+        where: { id: projectId },
+        data: {
+            status: 'PROCESSING', // Set project status to block further edits
+            jobDetails: jobDetails, // Save all instructions for the worker
+        }
+    });
 
-    // 4. Return IMMEDIATE success to the client (browser)
+    // 2. Immediately trigger the background worker via a NON-BLOCKING request.
+    // We use `fetch` and intentionally do NOT use `await` here.
+    const workerSecret = process.env.WORKER_SECRET || 'dev-secret';
+    
+    fetch(`${request.nextUrl.origin}/api/process-video`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            // CRITICAL: This is the security key the worker checks
+            'X-Worker-Secret': workerSecret, 
+        },
+        // The worker only needs the projectId to fetch the saved jobDetails
+        body: JSON.stringify({ projectId }), 
+    }).catch(err => {
+        console.error("Non-blocking worker launch failed:", err);
+    });
+
+    // 3. Return IMMEDIATE success (200 OK) to the client
     return NextResponse.json({
       success: true,
-      message: 'Processing job submitted. Check dashboard for status update.',
+      message: 'Processing job submitted.',
       status: 'SUBMITTED',
       projectId: projectId,
     });
