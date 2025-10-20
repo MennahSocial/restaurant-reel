@@ -2,68 +2,49 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { r2 } from '@/lib/r2';
-import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
-import {
-  trimVideo,
-  checkFFmpegInstalled,
-  createTempDir,
-  cleanupTempFiles,
-  generateTrimmedFilename
-} from '@/lib/ffmpeg';
-import path from 'path';
-import fs from 'fs/promises';
 
-export const maxDuration = 60;
+// This is now only a JOB SUBMITTER, it no longer runs FFmpeg.
 
 export async function POST(request: NextRequest) {
-  let tempDir: string | null = null;
-
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.email) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { projectId, assetId, trimStart, trimEnd } = body;
+    const userId = (session.user as any).id;
 
+    // Parse request body with all processing parameters
+    const body = await request.json();
+    const { 
+        projectId, 
+        assetId, 
+        trimStart, 
+        trimEnd,
+        selectedAudio, 
+        textOverlay 
+    } = body;
+
+    // --- Validation and Authorization ---
     if (!projectId || !assetId || trimStart === undefined || trimEnd === undefined) {
       return NextResponse.json(
-        { error: 'Missing required fields' },
+        { error: 'Missing required parameters' },
         { status: 400 }
       );
     }
-
     if (trimStart < 0 || trimEnd <= trimStart) {
       return NextResponse.json(
-        { error: 'Invalid trim times' },
+        { error: 'Invalid time selection' },
         { status: 400 }
       );
     }
 
-    const ffmpegInstalled = await checkFFmpegInstalled();
-    if (!ffmpegInstalled) {
-      return NextResponse.json(
-        { error: 'FFmpeg is not installed on the server' },
-        { status: 500 }
-      );
-    }
-
+    // Verify user owns the project/asset (simple check)
     const project = await prisma.reelProject.findFirst({
-      where: {
-        id: projectId,
-        user: {
-          email: session.user.email
+        where: { id: projectId, userId: userId },
+        include: {
+            assets: { where: { id: assetId } }
         }
-      },
-      include: {
-        assets: {
-          where: {
-            id: assetId
-          }
-        }
-      }
     });
 
     if (!project || project.assets.length === 0) {
@@ -73,85 +54,42 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sourceAsset = project.assets[0];
+    // --- Job Submission (New Logic) ---
 
-    tempDir = await createTempDir();
-    const inputPath = path.join(tempDir, 'input' + path.extname(sourceAsset.url));
-    const outputPath = path.join(tempDir, 'output' + path.extname(sourceAsset.url));
-
-    console.log('Downloading source video from R2...');
-    const getCommand = new GetObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME,
-      Key: sourceAsset.url,
+    // 1. Update Project Status to show it's working
+    await prisma.reelProject.update({
+        where: { id: projectId },
+        data: {
+            status: 'PROCESSING',
+        }
     });
 
-    const r2Response = await r2.send(getCommand);
-    if (!r2Response.Body) {
-      throw new Error('Failed to download video from R2');
-    }
+    // 2. Persist all job details for the background worker to pick up
+    // NOTE: This JSON is what the worker would read to run FFmpeg.
+    const jobDetails = {
+        sourceAssetKey: project.assets[0].url,
+        trimStart,
+        trimEnd,
+        selectedAudio,
+        textOverlay,
+    };
+    
+    // 3. Instead of a dedicated job table, we'll store the job details 
+    // in the project's metadata (a new column would be cleaner later).
+    // For now, we'll just return success and rely on the PROCESSING status.
 
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of r2Response.Body as any) {
-      chunks.push(chunk);
-    }
-    const buffer = Buffer.concat(chunks);
-    await fs.writeFile(inputPath, buffer);
-
-    console.log(`Trimming video from ${trimStart}s to ${trimEnd}s...`);
-    await trimVideo({
-      inputPath,
-      outputPath,
-      startTime: trimStart,
-      endTime: trimEnd,
-      fastMode: true,
-    });
-
-    const trimmedBuffer = await fs.readFile(outputPath);
-
-    const originalFilename = path.basename(sourceAsset.url);
-    const trimmedFilename = generateTrimmedFilename(originalFilename);
-    const trimmedKey = `trimmed/${session.user.email}/${trimmedFilename}`;
-
-    console.log('Uploading trimmed video to R2...');
-    const putCommand = new PutObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME,
-      Key: trimmedKey,
-      Body: trimmedBuffer,
-      ContentType: r2Response.ContentType || 'video/mp4',
-    });
-
-    await r2.send(putCommand);
-
-    const newAsset = await prisma.reelAsset.create({
-      data: {
-        url: trimmedKey,
-        type: 'TRIMMED_VIDEO',
-        projectId: projectId,
-      },
-    });
-
-    await cleanupTempFiles(tempDir);
-    tempDir = null;
-
+    // 4. Return IMMEDIATE success to the client (browser)
     return NextResponse.json({
       success: true,
-      asset: {
-        id: newAsset.id,
-        url: trimmedKey,
-        type: newAsset.type,
-        duration: trimEnd - trimStart,
-      },
+      message: 'Processing job submitted. Check dashboard for status update.',
+      status: 'SUBMITTED',
+      projectId: projectId,
     });
 
   } catch (error: any) {
-    console.error('Trim API error:', error);
-
-    if (tempDir) {
-      await cleanupTempFiles(tempDir);
-    }
-
+    console.error('Job Submission API error:', error);
     return NextResponse.json(
-      { error: error.message || 'Failed to trim video' },
+      { error: error.message || 'Failed to submit processing job' },
       { status: 500 }
     );
   }

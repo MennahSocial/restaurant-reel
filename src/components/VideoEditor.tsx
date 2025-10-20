@@ -5,6 +5,13 @@ import Link from 'next/link';
 import { ArrowLeft, Play, Pause, RotateCcw, Scissors, Type, Download, Loader2, CheckCircle, Music } from 'lucide-react';
 import axios from 'axios';
 
+// NEW INTERFACE for the Brand Kit prop
+interface BrandKitData {
+  primaryColor: string;
+  secondaryColor: string;
+  fontFamily: string;
+}
+
 interface VideoEditorProps {
   project: {
     id: string;
@@ -12,24 +19,12 @@ interface VideoEditorProps {
   };
   videoUrl: string;
   assetId: string;
+  brandKit: BrandKitData; // <-- ACCEPTS REAL PROP
 }
 
 type TrimStatus = 'idle' | 'processing' | 'success' | 'error';
 
-interface BrandKit {
-  primaryColor: string;
-  secondaryColor: string;
-  fontFamily: string;
-}
-
-// MOCK DATA: Simulates fetching the user's brand kit
-const MOCK_BRAND_KIT: BrandKit = {
-  primaryColor: '#EF4444', // Red-500: great for highlighting food
-  secondaryColor: '#FBBF24', // Amber-400: warm color for food/restaurant
-  fontFamily: 'Roboto, sans-serif', 
-};
-
-// MOCK DATA: Simulated list of licensed music tracks
+// STATIC DATA: Simulated list of licensed music tracks
 const MOCK_AUDIO_TRACKS = [
   { id: 'track-1', name: 'Jazz Lounge (30s)' },
   { id: 'track-2', name: 'Upbeat Funk (60s)' },
@@ -37,7 +32,7 @@ const MOCK_AUDIO_TRACKS = [
 ];
 
 
-export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorProps) {
+export default function VideoEditor({ project, videoUrl, assetId, brandKit }: VideoEditorProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const trimEndRef = useRef(0);
 
@@ -49,13 +44,13 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
 
   const [selectedAudio, setSelectedAudio] = useState<string | null>(null); 
   
-  // NEW STATE: For Text Overlay Feature
+  // Text Overlay State uses actual brandKit colors for defaults
   const [textOverlay, setTextOverlay] = useState({
     content: '',
     position: 'bottom' as 'top' | 'center' | 'bottom',
     isVisible: false,
-    color: MOCK_BRAND_KIT.primaryColor,
-    font: MOCK_BRAND_KIT.fontFamily
+    color: brandKit.primaryColor, // Use real primary color
+    font: brandKit.fontFamily      // Use real font
   });
   
   const [trimStatus, setTrimStatus] = useState<TrimStatus>('idle');
@@ -84,7 +79,6 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
     const handleTimeUpdate = () => {
       setCurrentTime(video.currentTime);
       
-      // FIX: Use trimEndRef.current for the LATEST value for accurate pausing
       if (video.currentTime >= trimEndRef.current) {
         video.pause();
       }
@@ -161,30 +155,44 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
         throw new Error('End time must be greater than start time.');
       }
 
+      // 1. Prepare Text Overlay Data for the API payload
+      const processingTextOverlay = textOverlay.isVisible && textOverlay.content.trim() !== '' ? {
+        content: textOverlay.content.trim(),
+        color: textOverlay.color,
+        position: textOverlay.position,
+        // Passing the font allows the server (ffmpeg) to find the right font
+        font: textOverlay.font, 
+      } : undefined;
+
+
       const response = await axios.post('/api/trim', {
           projectId: project.id,
           assetId: assetId,
           trimStart: trimStart,
           trimEnd: trimEnd,
+          selectedAudio: selectedAudio, // Passed to server
+          textOverlay: processingTextOverlay, // Passed to server
       });
 
-      setTrimStatus('success');
-      setTrimmedAssetId(response.data.asset.id);
-
-      setTimeout(() => {
-        setTrimStatus('idle');
-      }, 3000);
+      // NEW LOGIC: The API now returns SUBMITTED status instantly
+      if (response.data.status === 'SUBMITTED') {
+        // We leave status as 'processing' and rely on the dashboard 
+        // polling or the user checking back later for 'COMPLETED'.
+        console.log("Job submitted:", response.data.message);
+      } else {
+        // Fallback for unexpected success
+        setTrimStatus('success');
+        setTimeout(() => setTrimStatus('idle'), 3000);
+      }
 
     } catch (error: any) {
       console.error('Trim error:', error);
       setTrimStatus('error');
-      setErrorMessage(error.response?.data?.error || error.message || 'Failed to trim video');
+      setErrorMessage(error.response?.data?.error || error.message || 'Failed to submit processing job');
     }
   };
 
   const handleExport = () => {
-    // NOTE: In a future iteration, the export API call would package 
-    // the video, audio, and textOverlay data into a single job for FFmpeg.
     if (trimmedAssetId) {
       window.open(`/api/export?assetId=${trimmedAssetId}`, '_blank');
     } else {
@@ -218,9 +226,9 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
         </div>
         <button 
           onClick={handleExport}
-          // The Export button changes color based on the primary brand color
+          // Use real primary color for styling
           className={`flex items-center space-x-2 px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed`}
-          style={{ backgroundColor: MOCK_BRAND_KIT.primaryColor }}
+          style={{ backgroundColor: brandKit.primaryColor }}
           disabled={trimStatus === 'processing'}
         >
           <Download className="w-4 h-4" />
@@ -242,7 +250,7 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
                 Your browser does not support the video tag.
               </video>
 
-              {/* NEW: Text Overlay Preview */}
+              {/* Text Overlay Preview */}
               {textOverlay.isVisible && (
                 <div 
                   className={`absolute left-0 right-0 p-4 text-center pointer-events-none ${getTextPositionClass(textOverlay.position)}`}
@@ -250,7 +258,8 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
                 >
                   <p 
                     className={`text-4xl font-black uppercase tracking-wide px-4 py-2 bg-black/50 inline-block`}
-                    style={{ color: textOverlay.color, WebkitTextStroke: `1px ${MOCK_BRAND_KIT.secondaryColor}` }} // Simulates an outline effect
+                    // Use real brand colors for text and simulated outline
+                    style={{ color: textOverlay.color, WebkitTextStroke: `1px ${brandKit.secondaryColor}` }}
                   >
                     {textOverlay.content}
                   </p>
@@ -268,7 +277,8 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
                   onChange={handleSeek}
                   className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
                   style={{
-                    background: `linear-gradient(to right, ${MOCK_BRAND_KIT.primaryColor} 0%, ${MOCK_BRAND_KIT.primaryColor} ${(currentTime / duration) * 100}%, #374151 ${(currentTime / duration) * 100}%, #374151 100%)`
+                    // Use real primary color for the timeline progress indicator
+                    background: `linear-gradient(to right, ${brandKit.primaryColor} 0%, ${brandKit.primaryColor} ${(currentTime / duration) * 100}%, #374151 ${(currentTime / duration) * 100}%, #374151 100%)`
                   }}
                 />
                 <div className="flex justify-between text-sm text-gray-400">
@@ -288,8 +298,8 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
                 <button
                   onClick={togglePlayPause}
                   className={`p-4 text-white rounded-full transition-colors`}
-                  style={{ backgroundColor: isPlaying ? '#374151' : MOCK_BRAND_KIT.primaryColor, 
-                           hover: { backgroundColor: isPlaying ? '#1f2937' : MOCK_BRAND_KIT.secondaryColor } }}
+                  // Use real primary color for the Play button
+                  style={{ backgroundColor: isPlaying ? '#374151' : brandKit.primaryColor }}
                   title={isPlaying ? 'Pause' : 'Play'}
                 >
                   {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-1" />}
@@ -424,13 +434,14 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
             </div>
 
 
-            {/* NEW FEATURE: Branded Text Overlay */}
+            {/* Branded Text Overlay */}
             <div 
               className="rounded-lg p-4 bg-gray-700 border"
-              style={{ borderColor: MOCK_BRAND_KIT.primaryColor, borderWidth: 1 }}
+              // Use real primary color for the border
+              style={{ borderColor: brandKit.primaryColor, borderWidth: 1 }}
             >
               <div className="flex items-center space-x-2 mb-3">
-                <Type className="w-5 h-5" style={{ color: MOCK_BRAND_KIT.primaryColor }} />
+                <Type className="w-5 h-5" style={{ color: brandKit.primaryColor }} />
                 <h3 className="font-medium text-white">Add Text Overlay</h3>
               </div>
               <div className="space-y-3">
@@ -441,12 +452,17 @@ export default function VideoEditor({ project, videoUrl, assetId }: VideoEditorP
                     id="text-content"
                     type="text"
                     value={textOverlay.content}
-                    onChange={(e) => setTextOverlay(p => ({ ...p, content: e.target.value, isVisible: e.target.value.length > 0 }))}
+                    // Toggle visibility based on content
+                    onChange={(e) => setTextOverlay(p => ({ 
+                      ...p, 
+                      content: e.target.value, 
+                      isVisible: e.target.value.length > 0 
+                    }))}
                     placeholder="E.g., Try Our New Special!"
                     className="w-full px-3 py-2 bg-gray-600 text-white rounded border border-gray-500 focus:border-red-500 focus:outline-none text-sm"
                   />
-                  <p className="text-xs text-gray-400 mt-1" style={{ fontFamily: MOCK_BRAND_KIT.fontFamily }}>
-                    Font: **{MOCK_BRAND_KIT.fontFamily}** | Color: **{MOCK_BRAND_KIT.primaryColor}**
+                  <p className="text-xs text-gray-400 mt-1" style={{ fontFamily: brandKit.fontFamily }}>
+                    Font: **{brandKit.fontFamily}** | Color: **{brandKit.primaryColor}**
                   </p>
                 </div>
                 
