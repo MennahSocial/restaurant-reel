@@ -1,4 +1,4 @@
-import { getServerSession } from 'next-auth';
+import { getServerSession } from 'next-auth/next';
 import { redirect } from 'next/navigation';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
@@ -19,7 +19,7 @@ export default async function EditVideoPage({
 }) {
   const { id } = await params;
 
-  const session = await getServerSession(authOptions);
+  const session = await getServerSession(authOptions as any) as any;
 
   if (!session?.user?.email) {
     redirect('/auth/signin');

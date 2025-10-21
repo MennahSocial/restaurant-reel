@@ -25,7 +25,7 @@ export default function NewProject() {
 
     setCreating(true);
     try {
-      const { data } = await axios.post('/api/projects', {
+      await axios.post('/api/projects', {
         name: projectName,
         videoKeys: uploadedKeys,
       });

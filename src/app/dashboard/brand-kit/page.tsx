@@ -1,9 +1,9 @@
-import { getServerSession } from 'next-auth';
+import { getServerSession } from 'next-auth/next';
 import { redirect } from 'next/navigation';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import BrandKitForm from '@/components/BrandKitForm';
-import { Palette, Image, ArrowLeft } from 'lucide-react';
+import { Palette, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 
 // Define the shape of the data we fetch
@@ -15,7 +15,7 @@ interface BrandKitData {
 }
 
 export default async function BrandKitPage() {
-  const session = await getServerSession(authOptions);
+  const session = await getServerSession(authOptions as any) as any;
 
   if (!session?.user?.email) {
     redirect('/auth/signin');
@@ -23,7 +23,7 @@ export default async function BrandKitPage() {
 
   // Fetch the user's existing brand kit or use defaults
   const userBrandKit = await prisma.reelBrandKit.findUnique({
-    where: { userId: (session.user as any).id },
+    where: { userId: session.user.id },
     select: {
       primaryColor: true,
       secondaryColor: true,

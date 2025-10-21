@@ -1,11 +1,11 @@
-import { getServerSession } from 'next-auth';
+import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import Link from 'next/link';
 import { PlusCircle, Video, Clock, FolderOpen } from 'lucide-react';
 
 export default async function Dashboard() {
-  const session = await getServerSession(authOptions);
+  const session = await getServerSession(authOptions as any) as any;
 
   if (!session?.user?.email) {
     return null;

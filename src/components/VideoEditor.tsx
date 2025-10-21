@@ -54,7 +54,7 @@ export default function VideoEditor({ project, videoUrl, assetId, brandKit }: Vi
   });
   
   const [trimStatus, setTrimStatus] = useState<TrimStatus>('idle');
-  const [trimmedAssetId, setTrimmedAssetId] = useState<string | null>(null);
+  const [trimmedAssetId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   // Synchronize ref with trimEnd state whenever it changes
@@ -178,7 +178,7 @@ export default function VideoEditor({ project, videoUrl, assetId, brandKit }: Vi
       if (response.data.status === 'SUBMITTED') {
         // We leave status as 'processing' and rely on the dashboard 
         // polling or the user checking back later for 'COMPLETED'.
-        console.log("Job submitted:", response.data.message);
+        console.warn("Job submitted:", response.data.message);
       } else {
         // Fallback for unexpected success
         setTrimStatus('success');
@@ -211,7 +211,7 @@ export default function VideoEditor({ project, videoUrl, assetId, brandKit }: Vi
 
   return (
     <div className="flex flex-col h-screen bg-gray-900">
-      <div className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between flex-shrink-0">
+      <div className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between shrink-0">
         <div className="flex items-center space-x-4">
           <Link
             href={`/dashboard/projects/${project.id}`}
@@ -309,7 +309,7 @@ export default function VideoEditor({ project, videoUrl, assetId, brandKit }: Vi
           </div>
         </div>
 
-        <div className="w-full lg:w-80 bg-gray-800 border-l border-gray-700 p-6 overflow-y-auto flex-shrink-0">
+        <div className="w-full lg:w-80 bg-gray-800 border-l border-gray-700 p-6 overflow-y-auto shrink-0">
           <h2 className="text-lg font-semibold text-white mb-4">Tools</h2>
           
           <div className="space-y-4">

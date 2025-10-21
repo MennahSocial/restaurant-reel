@@ -1,4 +1,4 @@
-import { getServerSession } from 'next-auth';
+import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { getPublicUrl } from '@/lib/r2';
@@ -13,7 +13,7 @@ export default async function ProjectPage({
   params: Promise<{ id: string }> 
 }) {
   const { id } = await params;
-  const session = await getServerSession(authOptions);
+  const session = await getServerSession(authOptions as any) as any;
 
   if (!session?.user?.email) {
     redirect('/auth/signin');

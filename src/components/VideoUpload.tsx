@@ -3,7 +3,7 @@
 import { useCallback, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
-import { Upload, CheckCircle, XCircle } from 'lucide-react';
+import { Upload, XCircle } from 'lucide-react';
 
 interface VideoUploadProps {
   onUploadComplete: (key: string) => void;
@@ -14,37 +14,41 @@ export default function VideoUpload({ onUploadComplete }: VideoUploadProps) {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
 
-  const onDrop = useCallback(async (acceptedFiles: File[]) => {
+  const onDrop = useCallback((acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
     if (!file) return;
 
-    setUploading(true);
-    setProgress(0);
-    setError('');
+    const uploadFile = async () => {
+      setUploading(true);
+      setProgress(0);
+      setError('');
 
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
 
-      const { data } = await axios.post('/api/upload', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-        onUploadProgress: (progressEvent) => {
-          const percentCompleted = Math.round(
-            (progressEvent.loaded * 100) / (progressEvent.total || 1)
-          );
-          setProgress(percentCompleted);
-        },
-      });
+        const { data } = await axios.post('/api/upload', formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+          onUploadProgress: (progressEvent) => {
+            const percentCompleted = Math.round(
+              (progressEvent.loaded * 100) / (progressEvent.total || 1)
+            );
+            setProgress(percentCompleted);
+          },
+        });
 
-      onUploadComplete(data.key);
-    } catch (error: any) {
-      console.error('Upload failed:', error);
-      setError(error.response?.data?.error || 'Upload failed. Please try again.');
-    } finally {
-      setUploading(false);
-    }
+        onUploadComplete(data.key);
+      } catch (error: any) {
+        console.error('Upload failed:', error);
+        setError(error.response?.data?.error || 'Upload failed. Please try again.');
+      } finally {
+        setUploading(false);
+      }
+    };
+
+    void uploadFile();
   }, [onUploadComplete]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({

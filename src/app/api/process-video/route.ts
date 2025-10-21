@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
     const outputPath = path.join(tempDir, 'output.mp4'); 
 
     // --- 2. Video Download ---
-    console.log(`Worker: Downloading source video ${sourceAsset.url} from R2...`);
+    console.warn(`Worker: Downloading source video ${sourceAsset.url} from R2...`);
     const getCommand = new GetObjectCommand({
         Bucket: process.env.R2_BUCKET_NAME,
         Key: jobData.sourceAssetKey,
@@ -112,7 +112,7 @@ export async function POST(request: NextRequest) {
     }
 
     // --- 4. FFmpeg Processing Call ---
-    console.log(`Worker: Running FFmpeg processing for project ${projectId}...`);
+    console.warn(`Worker: Running FFmpeg processing for project ${projectId}...`);
     await trimVideo({
         inputPath,
         outputPath,
@@ -129,9 +129,18 @@ export async function POST(request: NextRequest) {
 
     const originalFilename = path.basename(sourceAsset.url);
     const trimmedFilename = generateTrimmedFilename(originalFilename);
-    const processedKey = `exports/${jobProject.user.email}/${trimmedFilename}`;
+    
+    // If the relation was included, prefer email; otherwise fall back to userId.
+    type JobProjectWithMaybeUser = typeof jobProject & { user?: { email?: string | null } | null };
+    const userSegment =
+        (jobProject as JobProjectWithMaybeUser).user?.email ??
+        jobProject.userId ??
+        "unknown-user";
 
-    console.log('Worker: Uploading processed video to R2...');
+    const processedKey = `exports/${userSegment}/${trimmedFilename}`;
+
+
+    console.warn('Worker: Uploading processed video to R2...');
     const putCommand = new PutObjectCommand({
         Bucket: process.env.R2_BUCKET_NAME,
         Key: processedKey,
@@ -168,8 +177,11 @@ export async function POST(request: NextRequest) {
 
   } catch (error: any) {
     errorToReport = error.message || 'Unknown processing failure';
-    console.error(`Worker failed for Project ${jobProject?.id || body?.projectId}:`, error);
-
+    console.error(
+        `Worker failed for Project ${jobProject?.id ?? "unknown"}:`,
+        error
+    );
+    
     // CRITICAL: Update project status to FAILED on error
     if (jobProject?.id) {
         await prisma.reelProject.update({

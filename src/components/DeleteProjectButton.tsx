@@ -19,7 +19,7 @@ export default function DeleteProjectButton({ projectId, projectName }: { projec
       await axios.delete(`/api/projects/${projectId}`);
       router.push('/dashboard');
       router.refresh();
-    } catch (error) {
+    } catch {
       alert('Failed to delete project');
       setDeleting(false);
     }
