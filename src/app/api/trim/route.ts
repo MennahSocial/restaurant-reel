@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
         where: { id: projectId },
         data: {
             status: 'PROCESSING', // Set project status to block further edits
-            jobDetails: jobDetails, // Save all instructions for the worker
+            jobDetails: JSON.stringify(jobDetails), // Save all instructions for the worker
         }
     });
 

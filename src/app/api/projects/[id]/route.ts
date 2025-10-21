@@ -5,8 +5,9 @@ import { prisma } from '@/lib/prisma';
 
 export async function DELETE(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  const { id } = await params;
   const session = await getServerSession(authOptions as any) as any;
   
   if (!session?.user?.email) {
@@ -17,7 +18,7 @@ export async function DELETE(
     // Verify ownership
     const project = await prisma.reelProject.findFirst({
       where: {
-        id: params.id,
+        id: id,
         user: {
           email: session.user.email
         }
@@ -30,7 +31,7 @@ export async function DELETE(
 
     // Delete project (assets will be cascade deleted)
     await prisma.reelProject.delete({
-      where: { id: params.id }
+      where: { id: id }
     });
 
     return NextResponse.json({ success: true });

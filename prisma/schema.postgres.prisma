@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = "file:./dev.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model ReelUser {
@@ -41,7 +41,7 @@ model ReelProject {
   userId      String
   name        String
   status      ProjectStatus @default(PENDING)
-  jobDetails  String?       // SQLite doesn't support Json type, using String instead
+  jobDetails  Json?
   templateId  String?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
@@ -65,7 +65,7 @@ model ReelAsset {
   type       AssetType
   url        String
   duration   Float?
-  metadata   String?   // SQLite doesn't support Json type, using String instead
+  metadata   Json?
   createdAt  DateTime  @default(now())
   
   project    ReelProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
